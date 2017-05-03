@@ -1,92 +1,59 @@
-<?php namespace App\Http\Controllers;
+<?php
 
-use Auth;
-use Input;
-use Redirect;
-use Utils;
-use View;
-use Cache;
-use Event;
-use Session;
+namespace App\Http\Controllers;
+
+use App\Http\Requests\InvoiceRequest;
 use App\Models\Account;
 use App\Models\Client;
 use App\Models\Country;
-use App\Models\Currency;
-use App\Models\Industry;
-use App\Models\InvoiceDesign;
-use App\Models\PaymentTerm;
-use App\Models\Product;
-use App\Models\Size;
-use App\Models\TaxRate;
 use App\Models\Invitation;
-use App\Models\Activity;
 use App\Models\Invoice;
+use App\Models\InvoiceDesign;
+use App\Models\Product;
+use App\Models\TaxRate;
+use App\Ninja\Datatables\InvoiceDatatable;
 use App\Ninja\Mailers\ContactMailer as Mailer;
-use App\Ninja\Repositories\InvoiceRepository;
 use App\Ninja\Repositories\ClientRepository;
-use App\Ninja\Repositories\TaxRateRepository;
-use App\Events\QuoteApproved;
+use App\Ninja\Repositories\InvoiceRepository;
+use App\Services\InvoiceService;
+use Auth;
+use Cache;
+use Input;
+use Redirect;
+use Session;
+use Utils;
+use View;
 
 class QuoteController extends BaseController
 {
     protected $mailer;
     protected $invoiceRepo;
     protected $clientRepo;
-    protected $taxRateRepo;
+    protected $invoiceService;
+    protected $entityType = ENTITY_INVOICE;
 
-    public function __construct(Mailer $mailer, InvoiceRepository $invoiceRepo, ClientRepository $clientRepo, TaxRateRepository $taxRateRepo)
+    public function __construct(Mailer $mailer, InvoiceRepository $invoiceRepo, ClientRepository $clientRepo, InvoiceService $invoiceService)
     {
-        parent::__construct();
+        // parent::__construct();
 
         $this->mailer = $mailer;
         $this->invoiceRepo = $invoiceRepo;
         $this->clientRepo = $clientRepo;
-        $this->taxRateRepo = $taxRateRepo;
+        $this->invoiceService = $invoiceService;
     }
 
     public function index()
     {
-        if (!Utils::isPro()) {
-            return Redirect::to('/invoices/create');
-        }
+        $datatable = new InvoiceDatatable();
+        $datatable->entityType = ENTITY_QUOTE;
 
         $data = [
           'title' => trans('texts.quotes'),
           'entityType' => ENTITY_QUOTE,
-          'columns' => Utils::trans(['checkbox', 'quote_number', 'client', 'quote_date', 'quote_total', 'due_date', 'status', 'action']),
+          'datatable' => $datatable,
         ];
 
-    /*
-    if (Invoice::scope()->where('is_recurring', '=', true)->count() > 0)
-    {
-      $data['secEntityType'] = ENTITY_RECURRING_INVOICE;
-      $data['secColumns'] = Utils::trans(['checkbox', 'frequency', 'client', 'start_date', 'end_date', 'quote_total', 'action']);
-    }
-    */
-
-    return View::make('list', $data);
-    }
-
-    public function clientIndex()
-    {
-        $invitationKey = Session::get('invitation_key');
-        if (!$invitationKey) {
-            return Redirect::to('/setup');
-        }
-
-        $invitation = Invitation::with('account')->where('invitation_key', '=', $invitationKey)->first();
-        $account = $invitation->account;
-        $color = $account->primary_color ? $account->primary_color : '#0b4d78';
-        
-        $data = [
-          'color' => $color,
-          'hideLogo' => $account->isWhiteLabel(),
-          'title' => trans('texts.quotes'),
-          'entityType' => ENTITY_QUOTE,
-          'columns' => Utils::trans(['quote_number', 'quote_date', 'quote_total', 'due_date']),
-        ];
-
-        return View::make('public_list', $data);
+        return response()->view('list_wrapper', $data);
     }
 
     public function getDatatable($clientPublicId = null)
@@ -94,51 +61,31 @@ class QuoteController extends BaseController
         $accountId = Auth::user()->account_id;
         $search = Input::get('sSearch');
 
-        return $this->invoiceRepo->getDatatable($accountId, $clientPublicId, ENTITY_QUOTE, $search);
+        return $this->invoiceService->getDatatable($accountId, $clientPublicId, ENTITY_QUOTE, $search);
     }
 
-    public function getClientDatatable()
+    public function create(InvoiceRequest $request, $clientPublicId = 0)
     {
-        $search = Input::get('sSearch');
-        $invitationKey = Session::get('invitation_key');
-        $invitation = Invitation::where('invitation_key', '=', $invitationKey)->first();
-
-        if (!$invitation || $invitation->is_deleted) {
-            return [];
-        }
-
-        $invoice = $invitation->invoice;
-
-        if (!$invoice || $invoice->is_deleted) {
-            return [];
-        }
-
-        return $this->invoiceRepo->getClientDatatable($invitation->contact_id, ENTITY_QUOTE, $search);
-    }
-
-    public function create($clientPublicId = 0)
-    {
-        if (!Utils::isPro()) {
+        if (! Utils::hasFeature(FEATURE_QUOTES)) {
             return Redirect::to('/invoices/create');
         }
 
-        $client = null;
-        $invoiceNumber = Auth::user()->account->getNextInvoiceNumber(true);
-        $account = Account::with('country')->findOrFail(Auth::user()->account_id);
-
+        $account = Auth::user()->account;
+        $clientId = null;
         if ($clientPublicId) {
-            $client = Client::scope($clientPublicId)->firstOrFail();
+            $clientId = Client::getPrivateId($clientPublicId);
         }
+        $invoice = $account->createInvoice(ENTITY_QUOTE, $clientId);
+        $invoice->public_id = 0;
 
-        $data = array(
-        'account' => $account,
-        'invoice' => null,
-        'data' => Input::old('data'),
-        'invoiceNumber' => $invoiceNumber,
-        'method' => 'POST',
-        'url' => 'invoices',
-        'title' => trans('texts.new_quote'),
-        'client' => $client, );
+        $data = [
+            'entityType' => $invoice->getEntityType(),
+            'invoice' => $invoice,
+            'data' => Input::old('data'),
+            'method' => 'POST',
+            'url' => 'invoices',
+            'title' => trans('texts.new_quote'),
+        ];
         $data = array_merge($data, self::getViewModel());
 
         return View::make('invoices.edit', $data);
@@ -146,45 +93,53 @@ class QuoteController extends BaseController
 
     private static function getViewModel()
     {
+        $account = Auth::user()->account;
+
         return [
           'entityType' => ENTITY_QUOTE,
-          'account' => Auth::user()->account,
-          'products' => Product::scope()->orderBy('id')->get(array('product_key', 'notes', 'cost', 'qty')),
+          'account' => $account,
+          'products' => Product::scope()->with('default_tax_rate')->orderBy('product_key')->get(),
+          'taxRateOptions' => $account->present()->taxRateOptions,
+          'defaultTax' => $account->default_tax_rate,
           'countries' => Cache::get('countries'),
           'clients' => Client::scope()->with('contacts', 'country')->orderBy('name')->get(),
           'taxRates' => TaxRate::scope()->orderBy('name')->get(),
           'currencies' => Cache::get('currencies'),
           'sizes' => Cache::get('sizes'),
           'paymentTerms' => Cache::get('paymentTerms'),
+          'languages' => Cache::get('languages'),
           'industries' => Cache::get('industries'),
           'invoiceDesigns' => InvoiceDesign::getDesigns(),
-          'invoiceLabels' => Auth::user()->account->getInvoiceLabels()
+          'invoiceFonts' => Cache::get('fonts'),
+          'invoiceLabels' => Auth::user()->account->getInvoiceLabels(),
+          'isRecurring' => false,
         ];
     }
 
     public function bulk()
     {
-        $action = Input::get('action');
+        $action = Input::get('bulk_action') ?: Input::get('action');
+        ;
+        $ids = Input::get('bulk_public_id') ?: (Input::get('public_id') ?: Input::get('ids'));
 
         if ($action == 'convert') {
-            $invoice = Invoice::with('invoice_items')->scope(Input::get('id'))->firstOrFail();
-            $clone = $this->invoiceRepo->cloneInvoice($invoice, $invoice->id);
+            $invoice = Invoice::with('invoice_items')->scope($ids)->firstOrFail();
+            $clone = $this->invoiceService->convertQuote($invoice);
 
             Session::flash('message', trans('texts.converted_to_invoice'));
+
             return Redirect::to('invoices/'.$clone->public_id);
         }
 
-        $statusId = Input::get('statusId');
-        $ids = Input::get('id') ? Input::get('id') : Input::get('ids');
-        $count = $this->invoiceRepo->bulk($ids, $action, $statusId);
+        $count = $this->invoiceService->bulk($ids, $action);
 
         if ($count > 0) {
-            $key = $action == 'mark' ? "updated_quote" : "{$action}d_quote";
+            $key = $action == 'markSent' ? 'updated_quote' : "{$action}d_quote";
             $message = Utils::pluralize($key, $count);
             Session::flash('message', $message);
         }
 
-        return Redirect::to('quotes');
+        return $this->returnBulk(ENTITY_QUOTE, $action, $ids);
     }
 
     public function approve($invitationKey)
@@ -192,19 +147,8 @@ class QuoteController extends BaseController
         $invitation = Invitation::with('invoice.invoice_items', 'invoice.invitations')->where('invitation_key', '=', $invitationKey)->firstOrFail();
         $invoice = $invitation->invoice;
 
-        if ($invoice->is_quote && !$invoice->quote_invoice_id) {
-            Event::fire(new QuoteApproved($invoice));            
-            Activity::approveQuote($invitation);            
-
-            $invoice = $this->invoiceRepo->cloneInvoice($invoice, $invoice->id);
-            Session::flash('message', trans('texts.converted_to_invoice'));
-
-            foreach ($invoice->invitations as $invitationClone) {
-                if ($invitation->contact_id == $invitationClone->contact_id) {
-                    $invitationKey = $invitationClone->invitation_key;
-                }
-            }
-        }
+        $invitationKey = $this->invoiceService->approveQuote($invoice, $invitation);
+        Session::flash('message', trans('texts.quote_is_approved'));
 
         return Redirect::to("view/{$invitationKey}");
     }

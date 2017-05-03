@@ -1,134 +1,155 @@
-<?php namespace App\Http\Controllers;
+<?php
 
+namespace App\Http\Controllers;
+
+use App\Models\Client;
+use App\Models\Expense;
+use App\Ninja\Repositories\DashboardRepository;
 use Auth;
-use DB;
+use Utils;
 use View;
-use App\Models\Activity;
-use App\Models\Invoice;
-use App\Models\Payment;
 
+/**
+ * Class DashboardController.
+ */
 class DashboardController extends BaseController
 {
+    public function __construct(DashboardRepository $dashboardRepo)
+    {
+        $this->dashboardRepo = $dashboardRepo;
+    }
+
+    /**
+     * @return \Illuminate\Contracts\View\View
+     */
     public function index()
     {
-        // total_income, billed_clients, invoice_sent and active_clients
-        $select = DB::raw('COUNT(DISTINCT CASE WHEN invoices.id IS NOT NULL THEN clients.id ELSE null END) billed_clients,
-                        SUM(CASE WHEN invoices.invoice_status_id >= '.INVOICE_STATUS_SENT.' THEN 1 ELSE 0 END) invoices_sent,
-                        COUNT(DISTINCT clients.id) active_clients');
-        $metrics = DB::table('accounts')
-            ->select($select)
-            ->leftJoin('clients', 'accounts.id', '=', 'clients.account_id')
-            ->leftJoin('invoices', 'clients.id', '=', 'invoices.client_id')
-            ->where('accounts.id', '=', Auth::user()->account_id)
-            ->where('clients.is_deleted', '=', false)
-            ->where('invoices.is_deleted', '=', false)
-            ->where('invoices.is_recurring', '=', false)
-            ->where('invoices.is_quote', '=', false)
-            ->groupBy('accounts.id')
-            ->first();
+        $user = Auth::user();
+        $viewAll = $user->hasPermission('view_all');
+        $userId = $user->id;
+        $account = $user->account;
+        $accountId = $account->id;
 
-        $select = DB::raw('SUM(clients.paid_to_date) as value, clients.currency_id as currency_id');
-        $paidToDate = DB::table('accounts')
-            ->select($select)
-            ->leftJoin('clients', 'accounts.id', '=', 'clients.account_id')
-            ->where('accounts.id', '=', Auth::user()->account_id)
-            ->where('clients.is_deleted', '=', false)
-            ->groupBy('accounts.id')
-            ->groupBy(DB::raw('CASE WHEN clients.currency_id IS NULL THEN CASE WHEN accounts.currency_id IS NULL THEN 1 ELSE accounts.currency_id END ELSE clients.currency_id END'))
-            ->get();
+        $dashboardRepo = $this->dashboardRepo;
+        $metrics = $dashboardRepo->totals($accountId, $userId, $viewAll);
+        $paidToDate = $dashboardRepo->paidToDate($account, $userId, $viewAll);
+        $averageInvoice = $dashboardRepo->averages($account, $userId, $viewAll);
+        $balances = $dashboardRepo->balances($accountId, $userId, $viewAll);
+        $activities = $dashboardRepo->activities($accountId, $userId, $viewAll);
+        $pastDue = $dashboardRepo->pastDue($accountId, $userId, $viewAll);
+        $upcoming = $dashboardRepo->upcoming($accountId, $userId, $viewAll);
+        $payments = $dashboardRepo->payments($accountId, $userId, $viewAll);
+        $expenses = $dashboardRepo->expenses($account, $userId, $viewAll);
+        $tasks = $dashboardRepo->tasks($accountId, $userId, $viewAll);
 
-        $select = DB::raw('AVG(invoices.amount) as invoice_avg, clients.currency_id as currency_id');
-        $averageInvoice = DB::table('accounts')
-            ->select($select)
-            ->leftJoin('clients', 'accounts.id', '=', 'clients.account_id')
-            ->leftJoin('invoices', 'clients.id', '=', 'invoices.client_id')
-            ->where('accounts.id', '=', Auth::user()->account_id)
-            ->where('clients.is_deleted', '=', false)
-            ->where('invoices.is_deleted', '=', false)
-            ->where('invoices.is_quote', '=', false)
-            ->where('invoices.is_recurring', '=', false)
-            ->groupBy('accounts.id')
-            ->groupBy(DB::raw('CASE WHEN clients.currency_id IS NULL THEN CASE WHEN accounts.currency_id IS NULL THEN 1 ELSE accounts.currency_id END ELSE clients.currency_id END'))
-            ->get();
+        $showBlueVinePromo = $user->is_admin
+            && env('BLUEVINE_PARTNER_UNIQUE_ID')
+            && ! $account->company->bluevine_status
+            && $account->created_at <= date('Y-m-d', strtotime('-1 month'));
 
-        $select = DB::raw('SUM(clients.balance) as value, clients.currency_id as currency_id');
-        $balances = DB::table('accounts')
-            ->select($select)
-            ->leftJoin('clients', 'accounts.id', '=', 'clients.account_id')
-            ->where('accounts.id', '=', Auth::user()->account_id)
-            ->where('clients.is_deleted', '=', false)
-            ->groupBy('accounts.id')
-            ->groupBy(DB::raw('CASE WHEN clients.currency_id IS NULL THEN CASE WHEN accounts.currency_id IS NULL THEN 1 ELSE accounts.currency_id END ELSE clients.currency_id END'))
-            ->get();
+        $showWhiteLabelExpired = Utils::isSelfHost() && $account->company->hasExpiredPlan(PLAN_WHITE_LABEL);
 
-        $activities = Activity::where('activities.account_id', '=', Auth::user()->account_id)
-                ->where('activity_type_id', '>', 0)
-                ->orderBy('created_at', 'desc')
-                ->take(50)
-                ->get();
-
-        $pastDue = DB::table('invoices')
-                    ->leftJoin('clients', 'clients.id', '=', 'invoices.client_id')
-                    ->leftJoin('contacts', 'contacts.client_id', '=', 'clients.id')
-                    ->where('invoices.account_id', '=', Auth::user()->account_id)
-                    ->where('clients.deleted_at', '=', null)
-                    ->where('contacts.deleted_at', '=', null)
-                    ->where('invoices.is_recurring', '=', false)
-                    ->where('invoices.is_quote', '=', false)
-                    ->where('invoices.balance', '>', 0)
-                    ->where('invoices.is_deleted', '=', false)
-                    ->where('contacts.is_primary', '=', true)
-                    ->where('invoices.due_date', '<', date('Y-m-d'))
-                    ->select(['invoices.due_date', 'invoices.balance', 'invoices.public_id', 'invoices.invoice_number', 'clients.name as client_name', 'contacts.email', 'contacts.first_name', 'contacts.last_name', 'clients.currency_id', 'clients.public_id as client_public_id'])
-                    ->orderBy('invoices.due_date', 'asc')
-                    ->take(50)
-                    ->get();
-
-        $upcoming = DB::table('invoices')
-                    ->leftJoin('clients', 'clients.id', '=', 'invoices.client_id')
-                    ->leftJoin('contacts', 'contacts.client_id', '=', 'clients.id')
-                    ->where('invoices.account_id', '=', Auth::user()->account_id)
-                    ->where('clients.deleted_at', '=', null)
-                    ->where('contacts.deleted_at', '=', null)
-                    ->where('invoices.is_recurring', '=', false)
-                    ->where('invoices.is_quote', '=', false)
-                    ->where('invoices.balance', '>', 0)
-                    ->where('invoices.is_deleted', '=', false)
-                    ->where('contacts.is_primary', '=', true)
-                    ->where('invoices.due_date', '>=', date('Y-m-d'))
-                    ->orderBy('invoices.due_date', 'asc')
-                    ->take(50)
-                    ->select(['invoices.due_date', 'invoices.balance', 'invoices.public_id', 'invoices.invoice_number', 'clients.name as client_name', 'contacts.email', 'contacts.first_name', 'contacts.last_name', 'clients.currency_id', 'clients.public_id as client_public_id'])
-                    ->get();
-
-        $payments = DB::table('payments')
-                    ->leftJoin('clients', 'clients.id', '=', 'payments.client_id')
-                    ->leftJoin('contacts', 'contacts.client_id', '=', 'clients.id')
-                    ->leftJoin('invoices', 'invoices.id', '=', 'payments.invoice_id')
-                    ->where('payments.account_id', '=', Auth::user()->account_id)
-                    ->where('clients.deleted_at', '=', null)
-                    ->where('contacts.deleted_at', '=', null)
-                    ->where('contacts.is_primary', '=', true)
-                    ->select(['payments.payment_date', 'payments.amount', 'invoices.public_id', 'invoices.invoice_number', 'clients.name as client_name', 'contacts.email', 'contacts.first_name', 'contacts.last_name', 'clients.currency_id', 'clients.public_id as client_public_id'])
-                    ->orderBy('payments.id', 'desc')
-                    ->take(50)
-                    ->get();
-
+        // check if the account has quotes
+        $hasQuotes = false;
+        foreach ([$upcoming, $pastDue] as $data) {
+            foreach ($data as $invoice) {
+                if ($invoice->invoice_type_id == INVOICE_TYPE_QUOTE) {
+                    $hasQuotes = true;
+                }
+            }
+        }
 
         $data = [
-      'account' => Auth::user()->account,
-      'paidToDate' => $paidToDate,
-      'balances' => $balances,
-      'averageInvoice' => $averageInvoice,
-      'invoicesSent' => $metrics ? $metrics->invoices_sent : 0,
-      'activeClients' => $metrics ? $metrics->active_clients : 0,
-      'activities' => $activities,
-      'pastDue' => $pastDue,
-      'upcoming' => $upcoming,
-      'payments' => $payments,
-      'title' => trans('texts.dashboard'),
-    ];
+            'account' => $user->account,
+            'user' => $user,
+            'paidToDate' => $paidToDate,
+            'balances' => $balances,
+            'averageInvoice' => $averageInvoice,
+            'invoicesSent' => $metrics ? $metrics->invoices_sent : 0,
+            'activeClients' => $metrics ? $metrics->active_clients : 0,
+            'activities' => $activities,
+            'pastDue' => $pastDue,
+            'upcoming' => $upcoming,
+            'payments' => $payments,
+            'title' => trans('texts.dashboard'),
+            'hasQuotes' => $hasQuotes,
+            'showBreadcrumbs' => false,
+            'currencies' => $this->getCurrencyCodes(),
+            'expenses' => $expenses,
+            'tasks' => $tasks,
+            'showBlueVinePromo' => $showBlueVinePromo,
+            'showWhiteLabelExpired' => $showWhiteLabelExpired,
+        ];
+
+        if ($showBlueVinePromo) {
+            $usdLast12Months = 0;
+            $pastYear = date('Y-m-d', strtotime('-1 year'));
+            $paidLast12Months = $dashboardRepo->paidToDate($account, $userId, $viewAll, $pastYear);
+
+            foreach ($paidLast12Months as $item) {
+                if ($item->currency_id == null) {
+                    $currency = $user->account->currency_id ?: DEFAULT_CURRENCY;
+                } else {
+                    $currency = $item->currency_id;
+                }
+
+                if ($currency == CURRENCY_DOLLAR) {
+                    $usdLast12Months += $item->value;
+                }
+            }
+
+            $data['usdLast12Months'] = $usdLast12Months;
+        }
 
         return View::make('dashboard', $data);
+    }
+
+    private function getCurrencyCodes()
+    {
+        $account = Auth::user()->account;
+        $currencyIds = $account->currency_id ? [$account->currency_id] : [DEFAULT_CURRENCY];
+
+        // get client/invoice currencies
+        $data = Client::scope()
+            ->withArchived()
+            ->distinct()
+            ->get(['currency_id'])
+            ->toArray();
+
+        array_map(function ($item) use (&$currencyIds) {
+            $currencyId = intval($item['currency_id']);
+            if ($currencyId && ! in_array($currencyId, $currencyIds)) {
+                $currencyIds[] = $currencyId;
+            }
+        }, $data);
+
+        // get expense currencies
+        $data = Expense::scope()
+            ->withArchived()
+            ->distinct()
+            ->get(['expense_currency_id'])
+            ->toArray();
+
+        array_map(function ($item) use (&$currencyIds) {
+            $currencyId = intval($item['expense_currency_id']);
+            if ($currencyId && ! in_array($currencyId, $currencyIds)) {
+                $currencyIds[] = $currencyId;
+            }
+        }, $data);
+
+        $currencies = [];
+        foreach ($currencyIds as $currencyId) {
+            $currencies[$currencyId] = Utils::getFromCache($currencyId, 'currencies')->code;
+        }
+
+        return $currencies;
+    }
+
+    public function chartData($groupBy, $startDate, $endDate, $currencyCode, $includeExpenses)
+    {
+        $includeExpenses = filter_var($includeExpenses, FILTER_VALIDATE_BOOLEAN);
+        $data = $this->dashboardRepo->chartData(Auth::user()->account, $groupBy, $startDate, $endDate, $currencyCode, $includeExpenses);
+
+        return json_encode($data);
     }
 }

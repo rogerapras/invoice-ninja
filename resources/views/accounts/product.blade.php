@@ -1,18 +1,18 @@
-@extends('accounts.nav')
+@extends('header')
 
-@section('content') 
+@section('content')
   @parent
 
   {!! Former::open($url)->method($method)
       ->rules(['product_key' => 'required|max:255'])
-      ->addClass('col-md-8 col-md-offset-2 warn-on-exit') !!}
+      ->addClass('col-md-10 col-md-offset-1 warn-on-exit') !!}
 
 
   <div class="panel panel-default">
   <div class="panel-heading">
     <h3 class="panel-title">{!! $title !!}</h3>
   </div>
-  <div class="panel-body">
+  <div class="panel-body form-padding-right">
 
   @if ($product)
     {{ Former::populate($product) }}
@@ -20,43 +20,37 @@
   @endif
 
   {!! Former::text('product_key')->label('texts.product') !!}
-  {!! Former::textarea('notes')->data_bind("value: wrapped_notes, valueUpdate: 'afterkeydown'") !!}
+  {!! Former::textarea('notes')->rows(6) !!}
+
+  @if ($account->hasFeature(FEATURE_INVOICE_SETTINGS))
+      @if ($account->custom_invoice_item_label1)
+          {!! Former::text('custom_value1')->label($account->custom_invoice_item_label1) !!}
+      @endif
+      @if ($account->custom_invoice_item_label2)
+          {!! Former::text('custom_value2')->label($account->custom_invoice_item_label2) !!}
+      @endif
+  @endif
+
   {!! Former::text('cost') !!}
 
+  @if ($account->invoice_item_taxes)
+      {!! Former::select('default_tax_rate_id')
+            ->addOption('', '')
+            ->label(trans('texts.tax_rate'))
+            ->fromQuery($taxRates, function($model) { return $model->name . ': ' . $model->rate . '%'; }, 'id') !!}
+  @endif
+
   </div>
   </div>
 
-  {!! Former::actions( 
-      Button::normal(trans('texts.cancel'))->large()->asLinkTo(URL::to('/company/products'))->appendIcon(Icon::create('remove-circle')),
+  {!! Former::actions(
+      Button::normal(trans('texts.cancel'))->large()->asLinkTo(URL::to('/products'))->appendIcon(Icon::create('remove-circle')),
       Button::success(trans('texts.save'))->submit()->large()->appendIcon(Icon::create('floppy-disk'))
   ) !!}
 
   {!! Former::close() !!}
 
   <script type="text/javascript">
-
-  function ViewModel(data) {
-    var self = this;
-    @if ($product)
-      self.notes = ko.observable(wordWrapText('{{ str_replace(["\r\n","\r","\n"], '\n', addslashes($product->notes)) }}', 300));
-    @else
-      self.notes = ko.observable('');
-    @endif
-    
-    self.wrapped_notes = ko.computed({
-      read: function() {
-        return self.notes();
-      },
-      write: function(value) {
-        value = wordWrapText(value, 235);
-        self.notes(value);
-      },
-      owner: this
-    });
-  }
-
-  window.model = new ViewModel();
-  ko.applyBindings(model);  
 
   $(function() {
     $('#product_key').focus();

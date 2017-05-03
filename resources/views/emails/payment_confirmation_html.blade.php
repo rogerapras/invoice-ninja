@@ -3,5 +3,10 @@
 <head>
   <meta charset="utf-8">
 </head>
-<body>{!! $body !!}</body>
+<body>
+    @if ($account->emailMarkupEnabled())
+        @include('emails.partials.client_view_action', ['link' => $link])
+    @endif
+    {!! $body !!}
+</body>
 </html>

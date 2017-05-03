@@ -1,43 +1,42 @@
-<?php namespace App\Http\Controllers;
+<?php
 
-use Utils;
-use Response;
+namespace App\Http\Controllers;
+
 use App\Models\Invoice;
 use App\Ninja\Repositories\InvoiceRepository;
+use Response;
 
-class QuoteApiController extends Controller
+class QuoteApiController extends InvoiceApiController
 {
     protected $invoiceRepo;
 
-    public function __construct(InvoiceRepository $invoiceRepo)
-    {
-        $this->invoiceRepo = $invoiceRepo;
-    }
+    protected $entityType = ENTITY_INVOICE;
 
-    public function index()
-    {
-        $invoices = Invoice::scope()
-                        ->with('client', 'user')
-                        ->where('invoices.is_quote', '=', true)
-                        ->orderBy('created_at', 'desc')
-                        ->get();
-        $invoices = Utils::remapPublicIds($invoices);
+    /**
+     * @SWG\Get(
+     *   path="/quotes",
+     *   summary="List quotes",
+     *   operationId="listQuotes",
+     *   tags={"quote"},
+     *   @SWG\Response(
+     *     response=200,
+     *     description="A list of quotes",
+     *      @SWG\Schema(type="array", @SWG\Items(ref="#/definitions/Invoice"))
+     *   ),
+     *   @SWG\Response(
+     *     response="default",
+     *     description="an ""unexpected"" error"
+     *   )
+     * )
+     */
+     public function index()
+     {
+         $invoices = Invoice::scope()
+                         ->withTrashed()
+                         ->quotes()
+                         ->with('invoice_items', 'client')
+                         ->orderBy('created_at', 'desc');
 
-        $response = json_encode($invoices, JSON_PRETTY_PRINT);
-        $headers = Utils::getApiHeaders(count($invoices));
-
-        return Response::make($response, 200, $headers);
-    }
-
-  /*
-  public function store()
-  {
-    $data = Input::all();
-    $invoice = $this->invoiceRepo->save(false, $data, false);
-
-    $response = json_encode($invoice, JSON_PRETTY_PRINT);
-    $headers = Utils::getApiHeaders();
-    return Response::make($response, 200, $headers);
-  }
-  */
+         return $this->listResponse($invoices);
+     }
 }

@@ -1,142 +1,136 @@
-<?php namespace App\Http\Controllers;
+<?php
 
+namespace App\Http\Controllers;
+
+use App\Http\Requests\CreateTaskRequest;
+use App\Http\Requests\TaskRequest;
+use App\Http\Requests\UpdateTaskRequest;
+use App\Models\Client;
+use App\Models\Project;
+use App\Models\Task;
+use App\Ninja\Datatables\TaskDatatable;
+use App\Ninja\Repositories\InvoiceRepository;
+use App\Ninja\Repositories\TaskRepository;
+use App\Services\TaskService;
 use Auth;
-use View;
-use URL;
-use Utils;
+use DropdownButton;
 use Input;
-use Datatable;
-use Validator;
 use Redirect;
 use Session;
-use DropdownButton;
-use DateTime;
-use DateTimeZone;
-use App\Models\Client;
-use App\Models\Task;
-use App\Ninja\Repositories\TaskRepository;
-use App\Ninja\Repositories\InvoiceRepository;
+use URL;
+use Utils;
+use View;
 
+/**
+ * Class TaskController.
+ */
 class TaskController extends BaseController
 {
+    /**
+     * @var TaskRepository
+     */
     protected $taskRepo;
 
-    public function __construct(TaskRepository $taskRepo, InvoiceRepository $invoiceRepo)
-    {
-        parent::__construct();
+    /**
+     * @var TaskService
+     */
+    protected $taskService;
+
+    /**
+     * @var
+     */
+    protected $entityType = ENTITY_TASK;
+
+    /**
+     * @var InvoiceRepository
+     */
+    protected $invoiceRepo;
+
+    /**
+     * TaskController constructor.
+     *
+     * @param TaskRepository    $taskRepo
+     * @param InvoiceRepository $invoiceRepo
+     * @param TaskService       $taskService
+     */
+    public function __construct(
+        TaskRepository $taskRepo,
+        InvoiceRepository $invoiceRepo,
+        TaskService $taskService
+    ) {
+        // parent::__construct();
 
         $this->taskRepo = $taskRepo;
         $this->invoiceRepo = $invoiceRepo;
+        $this->taskService = $taskService;
     }
 
     /**
-     * Display a listing of the resource.
-     *
-     * @return Response
+     * @return \Illuminate\Contracts\View\View
      */
     public function index()
     {
-        self::checkTimezone();
-
-        return View::make('list', array(
+        return View::make('list_wrapper', [
             'entityType' => ENTITY_TASK,
+            'datatable' => new TaskDatatable(),
             'title' => trans('texts.tasks'),
-            'sortCol' => '2',
-            'columns' => Utils::trans(['checkbox', 'client', 'date', 'duration', 'description', 'status', 'action']),
-        ));
+        ]);
     }
 
+    /**
+     * @param null $clientPublicId
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function getDatatable($clientPublicId = null)
     {
-        $tasks = $this->taskRepo->find($clientPublicId, Input::get('sSearch'));
-
-        $table = Datatable::query($tasks);
-
-        if (!$clientPublicId) {
-            $table->addColumn('checkbox', function ($model) { return '<input type="checkbox" name="ids[]" value="'.$model->public_id.'" '.Utils::getEntityRowClass($model).'>'; })
-                  ->addColumn('client_name', function ($model) { return $model->client_public_id ? link_to('clients/'.$model->client_public_id, Utils::getClientDisplayName($model)) : ''; });
-        }
-
-        return $table->addColumn('created_at', function($model) { return Task::calcStartTime($model); })
-                ->addColumn('time_log', function($model) { return gmdate('H:i:s', Task::calcDuration($model)); })
-                ->addColumn('description', function($model) { return $model->description; })
-                ->addColumn('invoice_number', function($model) { return self::getStatusLabel($model); })
-                ->addColumn('dropdown', function ($model) {
-                    $str = '<div class="btn-group tr-action" style="visibility:hidden;">
-      							<button type="button" class="btn btn-xs btn-default dropdown-toggle" data-toggle="dropdown">
-        							'.trans('texts.select').' <span class="caret"></span>
-      							</button>
-      							<ul class="dropdown-menu" role="menu">';
-
-                        if (!$model->deleted_at || $model->deleted_at == '0000-00-00') {
-                            $str .= '<li><a href="'.URL::to('tasks/'.$model->public_id.'/edit').'">'.trans('texts.edit_task').'</a></li>';
-                        }
-
-                        if ($model->invoice_number) {
-                            $str .= '<li>' . link_to("/invoices/{$model->invoice_public_id}/edit", trans('texts.view_invoice')) . '</li>';
-                        } elseif ($model->is_running) {
-                            $str .= '<li><a href="javascript:stopTask('.$model->public_id.')">'.trans('texts.stop_task').'</a></li>';
-                        } elseif (!$model->deleted_at || $model->deleted_at == '0000-00-00') {
-                            $str .= '<li><a href="javascript:invoiceTask('.$model->public_id.')">'.trans('texts.invoice_task').'</a></li>';
-                        }
-
-                        if (!$model->deleted_at || $model->deleted_at == '0000-00-00') {
-    						$str .= '<li class="divider"></li>
-    						    <li><a href="javascript:archiveEntity('.$model->public_id.')">'.trans('texts.archive_task').'</a></li>';
-                        } else {
-                            $str .= '<li><a href="javascript:restoreEntity('.$model->public_id.')">'.trans('texts.restore_task').'</a></li>';
-                        }
-
-                        if (!$model->is_deleted) {
-                            $str .= '<li><a href="javascript:deleteEntity('.$model->public_id.')">'.trans('texts.delete_task').'</a></li></ul>';
-                        }
-
-                        return $str . '</div>';
-                })
-                ->make();
+        return $this->taskService->getDatatable($clientPublicId, Input::get('sSearch'));
     }
-
-    private function getStatusLabel($model) {
-        if ($model->invoice_number) {
-            $class = 'success';
-            $label = trans('texts.invoiced');
-        } elseif ($model->is_running) {
-            $class = 'primary';
-            $label = trans('texts.running');
-        } else {
-            $class = 'default';
-            $label = trans('texts.logged');
-        }
-        return "<h4><div class=\"label label-{$class}\">$label</div></h4>";
-    }
-
 
     /**
      * Store a newly created resource in storage.
      *
-     * @return Response
+     * @param CreateTaskRequest $request
+     *
+     * @return \Illuminate\Http\RedirectResponse
      */
-    public function store()
+    public function store(CreateTaskRequest $request)
     {
-        return $this->save();
+        return $this->save($request);
+    }
+
+    /**
+     * @param $publicId
+     *
+     * @return \Illuminate\Http\RedirectResponse
+     */
+    public function show($publicId)
+    {
+        Session::reflash();
+
+        return Redirect::to("tasks/{$publicId}/edit");
     }
 
     /**
      * Show the form for creating a new resource.
      *
-     * @return Response
+     * @param TaskRequest $request
+     *
+     * @return \Illuminate\Contracts\View\View
      */
-    public function create($clientPublicId = 0)
+    public function create(TaskRequest $request)
     {
-        self::checkTimezone();
+        $this->checkTimezone();
 
         $data = [
             'task' => null,
-            'clientPublicId' => Input::old('client') ? Input::old('client') : $clientPublicId,
+            'clientPublicId' => Input::old('client') ? Input::old('client') : ($request->client_id ?: 0),
+            'projectPublicId' => Input::old('project_id') ? Input::old('project_id') : ($request->project_id ?: 0),
             'method' => 'POST',
             'url' => 'tasks',
             'title' => trans('texts.new_task'),
-            'minuteOffset' => Utils::getTiemstampOffset(),
+            'timezone' => Auth::user()->account->timezone ? Auth::user()->account->timezone->name : DEFAULT_TIMEZONE,
+            'datetimeFormat' => Auth::user()->account->getMomentDateTimeFormat(),
         ];
 
         $data = array_merge($data, self::getViewModel());
@@ -147,31 +141,32 @@ class TaskController extends BaseController
     /**
      * Show the form for editing the specified resource.
      *
-     * @param  int      $id
-     * @return Response
+     * @param TaskRequest $request
+     *
+     * @return \Illuminate\Contracts\View\View
      */
-    public function edit($publicId)
+    public function edit(TaskRequest $request)
     {
-        self::checkTimezone();
+        $this->checkTimezone();
 
-        $task = Task::scope($publicId)->with('client', 'invoice')->firstOrFail();
+        $task = $request->entity();
 
         $actions = [];
         if ($task->invoice) {
-            $actions[] = ['url' => URL::to("inovices/{$task->invoice->public_id}/edit"), 'label' => trans("texts.view_invoice")];
+            $actions[] = ['url' => URL::to("invoices/{$task->invoice->public_id}/edit"), 'label' => trans('texts.view_invoice')];
         } else {
-            $actions[] = ['url' => 'javascript:submitAction("invoice")', 'label' => trans("texts.create_invoice")];
+            $actions[] = ['url' => 'javascript:submitAction("invoice")', 'label' => trans('texts.invoice_task')];
 
             // check for any open invoices
-            $invoices = $task->client_id ? $this->invoiceRepo->findOpenInvoices($task->client_id) : [];
+            $invoices = $task->client_id ? $this->invoiceRepo->findOpenInvoices($task->client_id, ENTITY_TASK) : [];
 
             foreach ($invoices as $invoice) {
-                $actions[] = ['url' => 'javascript:submitAction("add_to_invoice", '.$invoice->public_id.')', 'label' => trans("texts.add_to_invoice", ["invoice" => $invoice->invoice_number])];
+                $actions[] = ['url' => 'javascript:submitAction("add_to_invoice", '.$invoice->public_id.')', 'label' => trans('texts.add_to_invoice', ['invoice' => $invoice->invoice_number])];
             }
         }
 
         $actions[] = DropdownButton::DIVIDER;
-        if (!$task->trashed()) {
+        if (! $task->trashed()) {
             $actions[] = ['url' => 'javascript:submitAction("archive")', 'label' => trans('texts.archive_task')];
             $actions[] = ['url' => 'javascript:onDeleteClick()', 'label' => trans('texts.delete_task')];
         } else {
@@ -180,13 +175,15 @@ class TaskController extends BaseController
 
         $data = [
             'task' => $task,
+            'entity' => $task,
             'clientPublicId' => $task->client ? $task->client->public_id : 0,
+            'projectPublicId' => $task->project ? $task->project->public_id : 0,
             'method' => 'PUT',
-            'url' => 'tasks/'.$publicId,
+            'url' => 'tasks/'.$task->public_id,
             'title' => trans('texts.edit_task'),
-            'duration' => $task->is_running ? $task->getCurrentDuration() : $task->getDuration(),
             'actions' => $actions,
-            'minuteOffset' => Utils::getTiemstampOffset(),
+            'timezone' => Auth::user()->account->timezone ? Auth::user()->account->timezone->name : DEFAULT_TIMEZONE,
+            'datetimeFormat' => Auth::user()->account->getMomentDateTimeFormat(),
         ];
 
         $data = array_merge($data, self::getViewModel());
@@ -197,99 +194,128 @@ class TaskController extends BaseController
     /**
      * Update the specified resource in storage.
      *
-     * @param  int      $id
-     * @return Response
+     * @param UpdateTaskRequest $request
+     *
+     * @return \Illuminate\Http\RedirectResponse
      */
-    public function update($publicId)
+    public function update(UpdateTaskRequest $request)
     {
-        return $this->save($publicId);
+        $task = $request->entity();
+
+        return $this->save($request, $task->public_id);
     }
 
+    /**
+     * @return array
+     */
     private static function getViewModel()
     {
         return [
-            'clients' => Client::scope()->with('contacts')->orderBy('name')->get()
+            'clients' => Client::scope()->with('contacts')->orderBy('name')->get(),
+            'account' => Auth::user()->account,
+            'projects' => Project::scope()->with('client.contacts')->orderBy('name')->get(),
         ];
     }
 
-    private function save($publicId = null)
+    /**
+     * @param null $publicId
+     *
+     * @return \Illuminate\Http\RedirectResponse
+     */
+    private function save($request, $publicId = null)
     {
         $action = Input::get('action');
 
-        if (in_array($action, ['archive', 'delete', 'invoice', 'restore', 'add_to_invoice'])) {
+        if (in_array($action, ['archive', 'delete', 'restore'])) {
             return self::bulk();
         }
 
-        $task = $this->taskRepo->save($publicId, Input::all());
-        Session::flash('message', trans($publicId ? 'texts.updated_task' : 'texts.created_task'));
+        $task = $this->taskRepo->save($publicId, $request->input());
+
+        if ($publicId) {
+            Session::flash('message', trans('texts.updated_task'));
+        } else {
+            Session::flash('message', trans('texts.created_task'));
+        }
+
+        if (in_array($action, ['invoice', 'add_to_invoice'])) {
+            return self::bulk();
+        }
 
         return Redirect::to("tasks/{$task->public_id}/edit");
     }
 
+    /**
+     * @return \Illuminate\Http\RedirectResponse
+     */
     public function bulk()
     {
         $action = Input::get('action');
-        $ids = Input::get('id') ? Input::get('id') : Input::get('ids');
+        $ids = Input::get('public_id') ?: (Input::get('id') ?: Input::get('ids'));
 
         if ($action == 'stop') {
             $this->taskRepo->save($ids, ['action' => $action]);
             Session::flash('message', trans('texts.stopped_task'));
+
             return Redirect::to('tasks');
-        } else if ($action == 'invoice' || $action == 'add_to_invoice') {
-            $tasks = Task::scope($ids)->with('client')->get();
+        } elseif ($action == 'invoice' || $action == 'add_to_invoice') {
+            $tasks = Task::scope($ids)->with('client')->orderBy('project_id', 'id')->get();
             $clientPublicId = false;
             $data = [];
-            
+
+            $lastProjectId = false;
             foreach ($tasks as $task) {
                 if ($task->client) {
-                    if (!$clientPublicId) {
+                    if (! $clientPublicId) {
                         $clientPublicId = $task->client->public_id;
-                    } else if ($clientPublicId != $task->client->public_id) {
+                    } elseif ($clientPublicId != $task->client->public_id) {
                         Session::flash('error', trans('texts.task_error_multiple_clients'));
+
                         return Redirect::to('tasks');
                     }
                 }
 
                 if ($task->is_running) {
                     Session::flash('error', trans('texts.task_error_running'));
+
                     return Redirect::to('tasks');
-                } else if ($task->invoice_id) {
+                } elseif ($task->invoice_id) {
                     Session::flash('error', trans('texts.task_error_invoiced'));
+
                     return Redirect::to('tasks');
                 }
-                
+
+                $account = Auth::user()->account;
+                $showProject = $lastProjectId != $task->project_id;
                 $data[] = [
                     'publicId' => $task->public_id,
-                    'description' => $task->description,
-                    'startTime' => $task->getStartTime(),
+                    'description' => $task->present()->invoiceDescription($account, $showProject),
                     'duration' => $task->getHours(),
                 ];
+                $lastProjectId = $task->project_id;
             }
 
             if ($action == 'invoice') {
                 return Redirect::to("invoices/create/{$clientPublicId}")->with('tasks', $data);
             } else {
                 $invoiceId = Input::get('invoice_id');
+
                 return Redirect::to("invoices/{$invoiceId}/edit")->with('tasks', $data);
             }
         } else {
-            $count = $this->taskRepo->bulk($ids, $action);
+            $count = $this->taskService->bulk($ids, $action);
 
             $message = Utils::pluralize($action.'d_task', $count);
             Session::flash('message', $message);
 
-            if ($action == 'restore' && $count == 1) {
-                return Redirect::to('tasks/'.$ids[0].'/edit');
-            } else {
-                return Redirect::to('tasks');
-            }
+            return $this->returnBulk($this->entityType, $action, $ids);
         }
     }
 
     private function checkTimezone()
     {
-        if (!Auth::user()->account->timezone) {
-            $link = link_to('/company/details', trans('texts.click_here'), ['target' => '_blank']);
+        if (! Auth::user()->account->timezone) {
+            $link = link_to('/settings/localization?focus=timezone_id', trans('texts.click_here'), ['target' => '_blank']);
             Session::flash('warning', trans('texts.timezone_unset', ['link' => $link]));
         }
     }

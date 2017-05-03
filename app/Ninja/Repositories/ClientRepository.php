@@ -1,205 +1,196 @@
-<?php namespace App\Ninja\Repositories;
+<?php
 
+namespace App\Ninja\Repositories;
+
+use App\Events\ClientWasCreated;
+use App\Events\ClientWasUpdated;
 use App\Models\Client;
 use App\Models\Contact;
-use App\Models\Activity;
+use Auth;
+use Cache;
+use DB;
 
-class ClientRepository
+class ClientRepository extends BaseRepository
 {
-    public function find($filter = null)
+    public function getClassName()
     {
-        $query = \DB::table('clients')
+        return 'App\Models\Client';
+    }
+
+    public function all()
+    {
+        return Client::scope()
+                ->with('user', 'contacts', 'country')
+                ->withTrashed()
+                ->where('is_deleted', '=', false)
+                ->get();
+    }
+
+    public function find($filter = null, $userId = false)
+    {
+        $query = DB::table('clients')
+                    ->join('accounts', 'accounts.id', '=', 'clients.account_id')
                     ->join('contacts', 'contacts.client_id', '=', 'clients.id')
                     ->where('clients.account_id', '=', \Auth::user()->account_id)
                     ->where('contacts.is_primary', '=', true)
                     ->where('contacts.deleted_at', '=', null)
-                    ->select('clients.public_id', 'clients.name', 'contacts.first_name', 'contacts.last_name', 'clients.balance', 'clients.last_login', 'clients.created_at', 'clients.work_phone', 'contacts.email', 'clients.currency_id', 'clients.deleted_at', 'clients.is_deleted');
+                    //->whereRaw('(clients.name != "" or contacts.first_name != "" or contacts.last_name != "" or contacts.email != "")') // filter out buy now invoices
+                    ->select(
+                        DB::raw('COALESCE(clients.currency_id, accounts.currency_id) currency_id'),
+                        DB::raw('COALESCE(clients.country_id, accounts.country_id) country_id'),
+                        DB::raw("CONCAT(contacts.first_name, ' ', contacts.last_name) contact"),
+                        'clients.public_id',
+                        'clients.name',
+                        'contacts.first_name',
+                        'contacts.last_name',
+                        'clients.balance',
+                        'clients.last_login',
+                        'clients.created_at',
+                        'clients.created_at as client_created_at',
+                        'clients.work_phone',
+                        'contacts.email',
+                        'clients.deleted_at',
+                        'clients.is_deleted',
+                        'clients.user_id',
+                        'clients.id_number'
+                    );
 
-        if (!\Session::get('show_trash:client')) {
-            $query->where('clients.deleted_at', '=', null);
-        }
+        $this->applyFilters($query, ENTITY_CLIENT);
 
         if ($filter) {
             $query->where(function ($query) use ($filter) {
                 $query->where('clients.name', 'like', '%'.$filter.'%')
+                      ->orWhere('clients.id_number', 'like', '%'.$filter.'%')
                       ->orWhere('contacts.first_name', 'like', '%'.$filter.'%')
                       ->orWhere('contacts.last_name', 'like', '%'.$filter.'%')
                       ->orWhere('contacts.email', 'like', '%'.$filter.'%');
             });
         }
 
+        if ($userId) {
+            $query->where('clients.user_id', '=', $userId);
+        }
+
         return $query;
     }
 
-    public function getErrors($data)
+    public function save($data, $client = null)
     {
-        $contact = isset($data['contacts']) ? (array) $data['contacts'][0] : (isset($data['contact']) ? $data['contact'] : []);
-        $validator = \Validator::make($contact, [
-            'email' => 'email|required_without:first_name',
-            'first_name' => 'required_without:email',
-        ]);
-        if ($validator->fails()) {
-            return $validator->messages();
-        }
+        $publicId = isset($data['public_id']) ? $data['public_id'] : false;
 
-        return false;
-    }
-
-    public function save($publicId, $data, $notify = true)
-    {
-        if (!$publicId || $publicId == "-1") {
+        if ($client) {
+            // do nothing
+        } elseif (! $publicId || $publicId == '-1') {
             $client = Client::createNew();
-            $contact = Contact::createNew();
-            $contact->is_primary = true;
-            $contact->send_invoice = true;
         } else {
             $client = Client::scope($publicId)->with('contacts')->firstOrFail();
-            $contact = $client->contacts()->where('is_primary', '=', true)->firstOrFail();
         }
 
-        if (isset($data['name'])) {
-            $client->name = trim($data['name']);
-        }
-        if (isset($data['id_number'])) {
-            $client->id_number = trim($data['id_number']);
-        }
-        if (isset($data['vat_number'])) {
-            $client->vat_number = trim($data['vat_number']);
-        }
-        if (isset($data['work_phone'])) {
-            $client->work_phone = trim($data['work_phone']);
-        }
-        if (isset($data['custom_value1'])) {
-            $client->custom_value1 = trim($data['custom_value1']);
-        }
-        if (isset($data['custom_value2'])) {
-            $client->custom_value2 = trim($data['custom_value2']);
-        }
-        if (isset($data['address1'])) {
-            $client->address1 = trim($data['address1']);
-        }
-        if (isset($data['address2'])) {
-            $client->address2 = trim($data['address2']);
-        }
-        if (isset($data['city'])) {
-            $client->city = trim($data['city']);
-        }
-        if (isset($data['state'])) {
-            $client->state = trim($data['state']);
-        }
-        if (isset($data['postal_code'])) {
-            $client->postal_code = trim($data['postal_code']);
-        }
-        if (isset($data['country_id'])) {
-            $client->country_id = $data['country_id'] ? $data['country_id'] : null;
-        }
-        if (isset($data['private_notes'])) {
-            $client->private_notes = trim($data['private_notes']);
-        }
-        if (isset($data['size_id'])) {
-            $client->size_id = $data['size_id'] ? $data['size_id'] : null;
-        }
-        if (isset($data['industry_id'])) {
-            $client->industry_id = $data['industry_id'] ? $data['industry_id'] : null;
-        }
-        if (isset($data['currency_id'])) {
-            $client->currency_id = $data['currency_id'] ? $data['currency_id'] : null;
-        }
-        if (isset($data['payment_terms'])) {
-            $client->payment_terms = $data['payment_terms'];
-        }
-        if (isset($data['website'])) {
-            $client->website = trim($data['website']);
+        // auto-set the client id number
+        if (Auth::check() && Auth::user()->account->client_number_counter && !$client->id_number && empty($data['id_number'])) {
+            $data['id_number'] = Auth::user()->account->getNextNumber();
         }
 
+        if ($client->is_deleted) {
+            return $client;
+        }
+
+        // convert currency code to id
+        if (isset($data['currency_code'])) {
+            $currencyCode = strtolower($data['currency_code']);
+            $currency = Cache::get('currencies')->filter(function ($item) use ($currencyCode) {
+                return strtolower($item->code) == $currencyCode;
+            })->first();
+            if ($currency) {
+                $data['currency_id'] = $currency->id;
+            }
+        }
+
+        $client->fill($data);
         $client->save();
 
-        $isPrimary = true;
+        /*
+        if ( ! isset($data['contact']) && ! isset($data['contacts'])) {
+            return $client;
+        }
+        */
+
+        $first = true;
+        $contacts = isset($data['contact']) ? [$data['contact']] : $data['contacts'];
         $contactIds = [];
 
-        if (isset($data['contact'])) {
-            $info = $data['contact'];
-            if (isset($info['email'])) {
-                $contact->email = trim(strtolower($info['email']));
+        // If the primary is set ensure it's listed first
+        usort($contacts, function ($left, $right) {
+            if (isset($right['is_primary']) && isset($left['is_primary'])) {
+                return $right['is_primary'] - $left['is_primary'];
+            } else {
+                return 0;
             }
-            if (isset($info['first_name'])) {
-                $contact->first_name = trim($info['first_name']);
-            }
-            if (isset($info['last_name'])) {
-                $contact->last_name = trim($info['last_name']);
-            }
-            if (isset($info['phone'])) {
-                $contact->phone = trim($info['phone']);
-            }
-            $contact->is_primary = true;
-            $contact->send_invoice = true;
-            $client->contacts()->save($contact);
-        } else {
-            foreach ($data['contacts'] as $record) {
-                $record = (array) $record;
+        });
 
-                if ($publicId != "-1" && isset($record['public_id']) && $record['public_id']) {
-                    $contact = Contact::scope($record['public_id'])->firstOrFail();
-                } else {
-                    $contact = Contact::createNew();
-                }
+        foreach ($contacts as $contact) {
+            $contact = $client->addContact($contact, $first);
+            $contactIds[] = $contact->public_id;
+            $first = false;
+        }
 
-                if (isset($record['email'])) {
-                    $contact->email = trim(strtolower($record['email']));
-                }
-                if (isset($record['first_name'])) {
-                    $contact->first_name = trim($record['first_name']);
-                }
-                if (isset($record['last_name'])) {
-                    $contact->last_name = trim($record['last_name']);
-                }
-                if (isset($record['phone'])) {
-                    $contact->phone = trim($record['phone']);
-                }
-                $contact->is_primary = $isPrimary;
-                $contact->send_invoice = isset($record['send_invoice']) ? $record['send_invoice'] : true;
-                $isPrimary = false;
-
-                $client->contacts()->save($contact);
-                $contactIds[] = $contact->public_id;
-            }
-
+        if (! $client->wasRecentlyCreated) {
             foreach ($client->contacts as $contact) {
-                if (!in_array($contact->public_id, $contactIds)) {
+                if (! in_array($contact->public_id, $contactIds)) {
                     $contact->delete();
                 }
             }
         }
 
-        $client->save();
-
-        if (!$publicId || $publicId == "-1") {
-            Activity::createClient($client, $notify);
+        if (! $publicId || $publicId == '-1') {
+            event(new ClientWasCreated($client));
+        } else {
+            event(new ClientWasUpdated($client));
         }
 
         return $client;
     }
 
-    public function bulk($ids, $action)
+    public function findPhonetically($clientName)
     {
-        $clients = Client::withTrashed()->scope($ids)->get();
+        $clientNameMeta = metaphone($clientName);
+
+        $map = [];
+        $max = SIMILAR_MIN_THRESHOLD;
+        $clientId = 0;
+
+        $clients = Client::scope()->get(['id', 'name', 'public_id']);
 
         foreach ($clients as $client) {
-            if ($action == 'restore') {
-                $client->restore();
+            $map[$client->id] = $client;
 
-                $client->is_deleted = false;
-                $client->save();
-            } else {
-                if ($action == 'delete') {
-                    $client->is_deleted = true;
-                    $client->save();
-                }
+            if (! $client->name) {
+                continue;
+            }
 
-                $client->delete();
+            $similar = similar_text($clientNameMeta, metaphone($client->name), $percent);
+
+            if ($percent > $max) {
+                $clientId = $client->id;
+                $max = $percent;
             }
         }
 
-        return count($clients);
+        $contacts = Contact::scope()->get(['client_id', 'first_name', 'last_name', 'public_id']);
+
+        foreach ($contacts as $contact) {
+            if (! $contact->getFullName() || ! isset($map[$contact->client_id])) {
+                continue;
+            }
+
+            $similar = similar_text($clientNameMeta, metaphone($contact->getFullName()), $percent);
+
+            if ($percent > $max) {
+                $clientId = $contact->client_id;
+                $max = $percent;
+            }
+        }
+
+        return ($clientId && isset($map[$clientId])) ? $map[$clientId] : null;
     }
 }

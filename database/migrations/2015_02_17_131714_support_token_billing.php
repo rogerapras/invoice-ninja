@@ -1,24 +1,21 @@
 <?php
 
-use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Database\Migrations\Migration;
 
-class SupportTokenBilling extends Migration {
-
-	/**
-	 * Run the migrations.
-	 *
-	 * @return void
-	 */
-	public function up()
-	{
-        Schema::table('accounts', function($table)
-        {
-            $table->smallInteger('token_billing_type_id')->default(TOKEN_BILLING_OPT_IN);
+class SupportTokenBilling extends Migration
+{
+    /**
+     * Run the migrations.
+     *
+     * @return void
+     */
+    public function up()
+    {
+        Schema::table('accounts', function ($table) {
+            $table->smallInteger('token_billing_type_id')->default(TOKEN_BILLING_ALWAYS);
         });
 
-        Schema::create('account_gateway_tokens', function($table)
-        {
+        Schema::create('account_gateway_tokens', function ($table) {
             $table->increments('id');
             $table->unsignedInteger('account_id');
             $table->unsignedInteger('contact_id');
@@ -35,22 +32,20 @@ class SupportTokenBilling extends Migration {
             $table->foreign('client_id')->references('id')->on('clients')->onDelete('cascade');
         });
 
-        DB::table('accounts')->update(['token_billing_type_id' => TOKEN_BILLING_OPT_IN]);
-	}
+        DB::table('accounts')->update(['token_billing_type_id' => TOKEN_BILLING_ALWAYS]);
+    }
 
-	/**
-	 * Reverse the migrations.
-	 *
-	 * @return void
-	 */
-	public function down()
-	{
-        Schema::table('accounts', function($table)
-        {
+    /**
+     * Reverse the migrations.
+     *
+     * @return void
+     */
+    public function down()
+    {
+        Schema::table('accounts', function ($table) {
             $table->dropColumn('token_billing_type_id');
         });
 
         Schema::drop('account_gateway_tokens');
-	}
-
+    }
 }

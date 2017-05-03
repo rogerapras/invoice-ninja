@@ -1,73 +1,66 @@
-<?php namespace App\Http\Controllers;
-/*
-|--------------------------------------------------------------------------
-| Confide Controller Template
-|--------------------------------------------------------------------------
-|
-| This is the default Confide controller template for controlling user
-| authentication. Feel free to change to your needs.
-|
-*/
+<?php
 
-use Auth;
-use Session;
-use DB;
-use Validator;
-use Input;
-use View;
-use Redirect;
-use Datatable;
-use URL;
+namespace App\Http\Controllers;
 
 use App\Models\AccountToken;
+use App\Services\TokenService;
+use Auth;
+use Input;
+use Redirect;
+use Session;
+use URL;
+use Validator;
+use View;
 
-use App\Ninja\Repositories\AccountRepository;
-
+/**
+ * Class TokenController.
+ */
 class TokenController extends BaseController
 {
-    public function getDatatable()
+    /**
+     * @var TokenService
+     */
+    protected $tokenService;
+
+    /**
+     * TokenController constructor.
+     *
+     * @param TokenService $tokenService
+     */
+    public function __construct(TokenService $tokenService)
     {
-        $query = DB::table('account_tokens')
-                  ->where('account_tokens.account_id', '=', Auth::user()->account_id);
+        //parent::__construct();
 
-        if (!Session::get('show_trash:token')) {
-            $query->where('account_tokens.deleted_at', '=', null);
-        }
-
-        $query->select('account_tokens.public_id', 'account_tokens.name', 'account_tokens.token', 'account_tokens.public_id', 'account_tokens.deleted_at');
-
-        return Datatable::query($query)
-        ->addColumn('name', function ($model) { return link_to('tokens/'.$model->public_id.'/edit', $model->name); })
-        ->addColumn('token', function ($model) { return $model->token; })
-        ->addColumn('dropdown', function ($model) {
-          $actions = '<div class="btn-group tr-action" style="visibility:hidden;">
-              <button type="button" class="btn btn-xs btn-default dropdown-toggle" data-toggle="dropdown">
-                '.trans('texts.select').' <span class="caret"></span>
-              </button>
-              <ul class="dropdown-menu" role="menu">';
-
-          if (!$model->deleted_at) {
-              $actions .= '<li><a href="'.URL::to('tokens/'.$model->public_id).'/edit">'.uctrans('texts.edit_token').'</a></li>
-                           <li class="divider"></li>
-                           <li><a href="javascript:deleteToken('.$model->public_id.')">'.uctrans('texts.delete_token').'</a></li>';
-          }
-
-           $actions .= '</ul>
-          </div>';
-
-          return $actions;
-        })
-        ->orderColumns(['name', 'token'])
-        ->make();
+        $this->tokenService = $tokenService;
     }
 
+    /**
+     * @return \Illuminate\Http\RedirectResponse
+     */
+    public function index()
+    {
+        return Redirect::to('settings/' . ACCOUNT_API_TOKENS);
+    }
+
+    /**
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getDatatable()
+    {
+        return $this->tokenService->getDatatable(Auth::user()->id);
+    }
+
+    /**
+     * @param $publicId
+     *
+     * @return \Illuminate\Contracts\View\View
+     */
     public function edit($publicId)
     {
         $token = AccountToken::where('account_id', '=', Auth::user()->account_id)
                         ->where('public_id', '=', $publicId)->firstOrFail();
 
         $data = [
-            'showBreadcrumbs' => false,
             'token' => $token,
             'method' => 'PUT',
             'url' => 'tokens/'.$publicId,
@@ -77,24 +70,30 @@ class TokenController extends BaseController
         return View::make('accounts.token', $data);
     }
 
+    /**
+     * @param $publicId
+     *
+     * @return \Illuminate\Http\RedirectResponse
+     */
     public function update($publicId)
     {
         return $this->save($publicId);
     }
 
+    /**
+     * @return \Illuminate\Http\RedirectResponse
+     */
     public function store()
     {
         return $this->save();
     }
 
     /**
-     * Displays the form for account creation
-     *
+     * @return \Illuminate\Contracts\View\View
      */
     public function create()
     {
         $data = [
-          'showBreadcrumbs' => false,
           'token' => null,
           'method' => 'POST',
           'url' => 'tokens',
@@ -104,26 +103,28 @@ class TokenController extends BaseController
         return View::make('accounts.token', $data);
     }
 
-    public function delete()
+    /**
+     * @return \Illuminate\Http\RedirectResponse
+     */
+    public function bulk()
     {
-        $tokenPublicId = Input::get('tokenPublicId');
-        $token = AccountToken::where('account_id', '=', Auth::user()->account_id)
-                    ->where('public_id', '=', $tokenPublicId)->firstOrFail();
+        $action = Input::get('bulk_action');
+        $ids = Input::get('bulk_public_id');
+        $count = $this->tokenService->bulk($ids, $action);
 
-        $token->delete();
+        Session::flash('message', trans('texts.archived_token'));
 
-        Session::flash('message', trans('texts.deleted_token'));
-
-        return Redirect::to('company/advanced_settings/token_management');
+        return Redirect::to('settings/' . ACCOUNT_API_TOKENS);
     }
 
     /**
-     * Stores new account
+     * @param bool $tokenPublicId
      *
+     * @return $this|\Illuminate\Http\RedirectResponse
      */
     public function save($tokenPublicId = false)
     {
-        if (Auth::user()->account->isPro()) {
+        if (Auth::user()->account->hasFeature(FEATURE_API)) {
             $rules = [
                 'name' => 'required',
             ];
@@ -142,13 +143,9 @@ class TokenController extends BaseController
             if ($tokenPublicId) {
                 $token->name = trim(Input::get('name'));
             } else {
-                $lastToken = AccountToken::withTrashed()->where('account_id', '=', Auth::user()->account_id)
-                            ->orderBy('public_id', 'DESC')->first();
-
                 $token = AccountToken::createNew();
                 $token->name = trim(Input::get('name'));
-                $token->token = str_random(RANDOM_KEY_LENGTH);
-                $token->public_id = $lastToken ? $lastToken->public_id + 1 : 1;
+                $token->token = strtolower(str_random(RANDOM_KEY_LENGTH));
             }
 
             $token->save();
@@ -162,7 +159,6 @@ class TokenController extends BaseController
             Session::flash('message', $message);
         }
 
-        return Redirect::to('company/advanced_settings/token_management');
+        return Redirect::to('settings/' . ACCOUNT_API_TOKENS);
     }
-
 }

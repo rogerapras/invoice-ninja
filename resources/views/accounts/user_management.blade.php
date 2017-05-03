@@ -1,30 +1,25 @@
-@extends('accounts.nav')
+@extends('header')
 
 @section('content')
 	@parent
-	@include('accounts.nav_advanced')
+    @include('accounts.nav', ['selected' => ACCOUNT_USER_MANAGEMENT, 'advanced' => true])
 
-  {!! Former::open('users/delete')->addClass('user-form') !!}
-
-  <div style="display:none">
-    {!! Former::text('userPublicId') !!}
-  </div>
-  {!! Former::close() !!}
-
-
-  <div class="pull-right">  
-    {!! Button::normal(trans('texts.api_tokens'))->asLinkTo(URL::to('/company/advanced_settings/token_management'))->appendIcon(Icon::create('cloud')) !!}
-    @if (Utils::isPro())    
-        {!! Button::primary(trans('texts.add_user'))->asLinkTo(URL::to('/users/create'))->appendIcon(Icon::create('plus-sign')) !!}
+    @if (Utils::hasFeature(FEATURE_USERS))
+        @if (Auth::user()->caddAddUsers())
+            <div class="pull-right">
+                {!! Button::primary(trans('texts.add_user'))->asLinkTo(URL::to('/users/create'))->appendIcon(Icon::create('plus-sign')) !!}
+            </div>
+        @endif
+    @elseif (Utils::isTrial())
+        <div class="alert alert-warning">{!! trans('texts.add_users_not_supported') !!}</div>
     @endif
-  </div>
-
 
     <label for="trashed" style="font-weight:normal; margin-left: 10px;">
         <input id="trashed" type="checkbox" onclick="setTrashVisible()"
-            {!! Session::get('show_trash:user') ? 'checked' : ''!!}/> {!! trans('texts.show_deleted_users')!!}
+            {!! Session::get('entity_state_filter:user', STATUS_ACTIVE) != 'active' ? 'checked' : ''!!}/> {!! trans('texts.show_archived_users')!!}
     </label>
 
+  @include('partials.bulk_form', ['entityType' => ENTITY_USER])
 
   {!! Datatable::table()
       ->addColumn(
@@ -41,30 +36,18 @@
       ->render('datatable') !!}
 
   <script>
-  window.onDatatableReady = function() {
-    $('tbody tr').mouseover(function() {
-      $(this).closest('tr').find('.tr-action').css('visibility','visible');
-    }).mouseout(function() {
-      $dropdown = $(this).closest('tr').find('.tr-action');
-      if (!$dropdown.hasClass('open')) {
-        $dropdown.css('visibility','hidden');
-      }
-    });
-  }
+
+    window.onDatatableReady = actionListHandler;
 
     function setTrashVisible() {
         var checked = $('#trashed').is(':checked');
-        window.location = '{!! URL::to('view_archive/user') !!}' + (checked ? '/true' : '/false');
+        var url = '{{ URL::to('set_entity_filter/user') }}' + (checked ? '/active,archived' : '/active');
+
+        $.get(url, function(data) {
+            refreshDatatable();
+        })
     }
 
-  function deleteUser(id) {
-    if (!confirm("{!! trans('texts.are_you_sure') !!}")) {    
-      return;
-    }
-
-    $('#userPublicId').val(id);
-    $('form.user-form').submit();
-  }
   </script>
 
 @stop

@@ -7,7 +7,7 @@
             },
             {
                 "stack": "$accountDetails",
-                "margin": [40, 0, 0, 0]
+                "margin": [7, 0, 0, 0]
             },
             {
                 "stack": "$accountAddress"
@@ -30,7 +30,7 @@
                     "table": { 
                         "body": "$invoiceDetails"
                     },
-                    "margin": [0, 4, 12, 4],            
+                    "margin": [0, 0, 12, 0],
                     "layout": "noBorders"
                 }, 
                 {
@@ -48,8 +48,8 @@
             "hLineColor": "#D8D8D8",
             "paddingLeft": "$amount:8", 
             "paddingRight": "$amount:8", 
-            "paddingTop": "$amount:4", 
-            "paddingBottom": "$amount:4"            
+            "paddingTop": "$amount:6", 
+            "paddingBottom": "$amount:6"
         }
     },
     {
@@ -74,7 +74,7 @@
             "$notesAndTerms",
             {
                 "table": {
-                    "widths": ["*", "auto"],
+                    "widths": ["*", "40%"],
                     "body": "$subtotals"
                 },
                 "layout": {
@@ -87,9 +87,16 @@
                 }
             }
         ]
+    },
+    {
+        "stack": [
+            "$invoiceDocuments"
+        ],
+        "style": "invoiceDocuments"
     }
     ],
     "defaultStyle": {
+        "font": "$bodyFont",
         "fontSize": "$fontSize",
         "margin": [8, 4, 8, 4]
     },
@@ -104,6 +111,7 @@
     },
     "styles": {
         "entityTypeLabel": {
+            "font": "$headerFont",
             "fontSize": "$fontSizeLargest",
             "color": "$primaryColor:#37a3c6"
         },
@@ -114,6 +122,9 @@
             "color": "$primaryColor:#37a3c6",
             "bold": true
         },
+        "invoiceDetails": {
+            "margin": [0, 0, 8, 0]
+        }, 
         "accountDetails": {
             "margin": [0, 2, 0, 2]
         },
@@ -134,10 +145,10 @@
             "bold": true
         },
         "balanceDueLabel": {
-            "fontSize": "$fontSizeLargest"
+            "fontSize": "$fontSizeLarger"
         },
         "balanceDue": {
-            "fontSize": "$fontSizeLargest",
+            "fontSize": "$fontSizeLarger",
             "color": "$primaryColor:#37a3c6"
         },  
         "invoiceNumber": {
@@ -145,8 +156,20 @@
         },
         "tableHeader": {
             "bold": true,
-            "fontSize": "$fontSizeLargest"
+            "fontSize": "$fontSizeLarger"
         },
+        "costTableHeader": {
+            "alignment": "right"
+        },
+        "qtyTableHeader": {
+            "alignment": "right"
+        },
+        "taxTableHeader": {
+            "alignment": "right"
+        },
+        "lineTotalTableHeader": {
+            "alignment": "right"
+        },        
         "invoiceLineItemsTable": {
             "margin": [0, 16, 0, 16]
         },
@@ -170,7 +193,26 @@
         },            
         "termsLabel": {
             "bold": true
-        }           
+        },
+        "header": {
+            "font": "$headerFont",
+            "fontSize": "$fontSizeLargest",
+            "bold": true
+        },
+        "subheader": {
+            "font": "$headerFont",
+            "fontSize": "$fontSizeLarger"
+        },
+        "help": {
+            "fontSize": "$fontSizeSmaller",
+            "color": "#737373"
+        },
+        "invoiceDocuments": {
+            "margin": [7, 0, 7, 0]
+        },
+        "invoiceDocument": {
+            "margin": [0, 10, 0, 10]
+        }
     },
     "pageMargins": [40, 40, 40, 60]
 }

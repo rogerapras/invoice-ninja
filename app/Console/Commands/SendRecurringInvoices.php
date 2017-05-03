@@ -1,123 +1,135 @@
-<?php namespace App\Console\Commands;
+<?php
 
-use DateTime;
-use Carbon;
-use Utils;
-use Illuminate\Console\Command;
-use Symfony\Component\Console\Input\InputOption;
-use Symfony\Component\Console\Input\InputArgument;
-use App\Ninja\Mailers\ContactMailer as Mailer;
+namespace App\Console\Commands;
+
+use App\Models\Account;
 use App\Models\Invoice;
-use App\Models\InvoiceItem;
-use App\Models\Invitation;
+use App\Ninja\Mailers\ContactMailer as Mailer;
+use App\Ninja\Repositories\InvoiceRepository;
+use App\Services\PaymentService;
+use DateTime;
+use Illuminate\Console\Command;
 
+/**
+ * Class SendRecurringInvoices.
+ */
 class SendRecurringInvoices extends Command
 {
+    /**
+     * @var string
+     */
     protected $name = 'ninja:send-invoices';
+
+    /**
+     * @var string
+     */
     protected $description = 'Send recurring invoices';
+
+    /**
+     * @var Mailer
+     */
     protected $mailer;
 
-    public function __construct(Mailer $mailer)
+    /**
+     * @var InvoiceRepository
+     */
+    protected $invoiceRepo;
+
+    /**
+     * @var PaymentService
+     */
+    protected $paymentService;
+
+    /**
+     * SendRecurringInvoices constructor.
+     *
+     * @param Mailer            $mailer
+     * @param InvoiceRepository $invoiceRepo
+     * @param PaymentService    $paymentService
+     */
+    public function __construct(Mailer $mailer, InvoiceRepository $invoiceRepo, PaymentService $paymentService)
     {
         parent::__construct();
 
         $this->mailer = $mailer;
+        $this->invoiceRepo = $invoiceRepo;
+        $this->paymentService = $paymentService;
     }
 
     public function fire()
     {
-        $this->info(date('Y-m-d').' Running SendRecurringInvoices...');
+        $this->info(date('Y-m-d H:i:s') . ' Running SendRecurringInvoices...');
         $today = new DateTime();
 
+        // check for counter resets
+        $accounts = Account::where('reset_counter_frequency_id', '>', 0)
+            ->orderBy('id', 'asc')
+            ->get();
+
+        foreach ($accounts as $account) {
+            $account->checkCounterReset();
+        }
+
         $invoices = Invoice::with('account.timezone', 'invoice_items', 'client', 'user')
-            ->whereRaw('is_deleted IS FALSE AND deleted_at IS NULL AND is_recurring IS TRUE AND start_date <= ? AND (end_date IS NULL OR end_date >= ?)', array($today, $today))->get();
+            ->whereRaw('is_deleted IS FALSE AND deleted_at IS NULL AND is_recurring IS TRUE AND is_public IS TRUE AND frequency_id > 0 AND start_date <= ? AND (end_date IS NULL OR end_date >= ?)', [$today, $today])
+            ->orderBy('id', 'asc')
+            ->get();
         $this->info(count($invoices).' recurring invoice(s) found');
 
         foreach ($invoices as $recurInvoice) {
-            if ($recurInvoice->client->deleted_at) {
+            $shouldSendToday = $recurInvoice->shouldSendToday();
+            $this->info('Processing Invoice '.$recurInvoice->id.' - Should send '.($shouldSendToday ? 'YES' : 'NO'));
+
+            if (! $shouldSendToday) {
                 continue;
             }
 
-            if (!$recurInvoice->user->confirmed) {
-                continue;
+            $account = $recurInvoice->account;
+            $account->loadLocalizationSettings($recurInvoice->client);
+            $invoice = $this->invoiceRepo->createRecurringInvoice($recurInvoice);
+
+            if ($invoice && ! $invoice->isPaid()) {
+                $this->info('Sending Invoice');
+                $this->mailer->sendInvoice($invoice);
             }
-
-            $this->info('Processing Invoice '.$recurInvoice->id.' - Should send '.($recurInvoice->shouldSendToday() ? 'YES' : 'NO'));
-
-            if (!$recurInvoice->shouldSendToday()) {
-                continue;
-            }
-
-            $invoice = Invoice::createNew($recurInvoice);
-            $invoice->client_id = $recurInvoice->client_id;
-            $invoice->recurring_invoice_id = $recurInvoice->id;
-            $invoice->invoice_number = $recurInvoice->account->getNextInvoiceNumber(false, 'R');
-            $invoice->amount = $recurInvoice->amount;
-            $invoice->balance = $recurInvoice->amount;
-            $invoice->invoice_date = date_create()->format('Y-m-d');
-            $invoice->discount = $recurInvoice->discount;
-            $invoice->po_number = $recurInvoice->po_number;
-            $invoice->public_notes = Utils::processVariables($recurInvoice->public_notes);
-            $invoice->terms = Utils::processVariables($recurInvoice->terms);
-            $invoice->invoice_footer = Utils::processVariables($recurInvoice->invoice_footer);
-            $invoice->tax_name = $recurInvoice->tax_name;
-            $invoice->tax_rate = $recurInvoice->tax_rate;
-            $invoice->invoice_design_id = $recurInvoice->invoice_design_id;
-            $invoice->custom_value1 = $recurInvoice->custom_value1;
-            $invoice->custom_value2 = $recurInvoice->custom_value2;
-            $invoice->custom_taxes1 = $recurInvoice->custom_taxes1;
-            $invoice->custom_taxes2 = $recurInvoice->custom_taxes2;
-            $invoice->is_amount_discount = $recurInvoice->is_amount_discount;
-
-            if ($invoice->client->payment_terms != 0) {
-                $days = $invoice->client->payment_terms;
-                if ($days == -1) {
-                    $days = 0;
-                }
-                $invoice->due_date = date_create()->modify($days.' day')->format('Y-m-d');
-            }
-
-            $invoice->save();
-
-            foreach ($recurInvoice->invoice_items as $recurItem) {
-                $item = InvoiceItem::createNew($recurItem);
-                $item->product_id = $recurItem->product_id;
-                $item->qty = $recurItem->qty;
-                $item->cost = $recurItem->cost;
-                $item->notes = Utils::processVariables($recurItem->notes);
-                $item->product_key = Utils::processVariables($recurItem->product_key);
-                $item->tax_name = $recurItem->tax_name;
-                $item->tax_rate = $recurItem->tax_rate;
-                $invoice->invoice_items()->save($item);
-            }
-
-            foreach ($recurInvoice->invitations as $recurInvitation) {
-                $invitation = Invitation::createNew($recurInvitation);
-                $invitation->contact_id = $recurInvitation->contact_id;
-                $invitation->invitation_key = str_random(RANDOM_KEY_LENGTH);
-                $invoice->invitations()->save($invitation);
-            }
-
-            $this->mailer->sendInvoice($invoice);
-
-            $recurInvoice->last_sent_date = Carbon::now()->toDateTimeString();
-            $recurInvoice->save();
         }
 
-        $this->info('Done');
+        $delayedAutoBillInvoices = Invoice::with('account.timezone', 'recurring_invoice', 'invoice_items', 'client', 'user')
+            ->whereRaw('is_deleted IS FALSE AND deleted_at IS NULL AND is_recurring IS FALSE AND is_public IS TRUE
+            AND balance > 0 AND due_date = ? AND recurring_invoice_id IS NOT NULL',
+                [$today->format('Y-m-d')])
+            ->orderBy('invoices.id', 'asc')
+            ->get();
+        $this->info(count($delayedAutoBillInvoices).' due recurring invoice instance(s) found');
+
+        /** @var Invoice $invoice */
+        foreach ($delayedAutoBillInvoices as $invoice) {
+            if ($invoice->isPaid()) {
+                continue;
+            }
+
+            if ($invoice->getAutoBillEnabled() && $invoice->client->autoBillLater()) {
+                $this->info('Processing Autobill-delayed Invoice ' . $invoice->id);
+                $this->paymentService->autoBillInvoice($invoice);
+            }
+        }
+
+        $this->info(date('Y-m-d H:i:s') . ' Done');
     }
 
+    /**
+     * @return array
+     */
     protected function getArguments()
     {
-        return array(
-            //array('example', InputArgument::REQUIRED, 'An example argument.'),
-        );
+        return [];
     }
 
+    /**
+     * @return array
+     */
     protected function getOptions()
     {
-        return array(
-            //array('example', null, InputOption::VALUE_OPTIONAL, 'An example option.', null),
-        );
+        return [];
     }
 }
